@@ -31,6 +31,17 @@ def load_data_and_augment(data_dir):
 
     return data_points
 
+# data loadder for feature extraction
+def load_data_for_feature_extraction(data_dir):
+    data_points = []
+    image_paths = [os.path.join(data_dir, img) for img in os.listdir(data_dir) if img.endswith(('png', 'jpg', 'jpeg'))]
+
+    for path in image_paths:
+        data_point = DataPoint(path, None)
+        data_points.append(data_point)
+
+    return data_points
+
 # Data preprocessing
 
 s=1
@@ -111,7 +122,7 @@ if __name__ == '__main__':
     # Training loop with hyperparameter search
     session_num = 0
     # Load and augment data
-    data_dir = 'Data\\'
+    data_dir = r'C:\Users\logix\Desktop\deep neural network\dataset4classes'
     data_points = load_data_and_augment(data_dir)
 
     # Create SimCLRDataset
@@ -182,4 +193,50 @@ if __name__ == '__main__':
                         with SummaryWriter(log_dir, "hparams") as writer_hparams:
                             hparams_dict = {param_name: param_value for param_name, param_value in hparams.items()}
                             writer_hparams.add_hparams(hparams_dict, {'Loss/train_epoch': avg_loss})
+
+    # STEP 2 Extracting vectors of photos
+    # Funkcja do ekstrakcji wektorów cech
+    def extract_features(simclr_model, data_loader):
+        simclr_model.eval()  # Przełącz model w tryb oceny (eval)
+        features = {}
+        with torch.no_grad():  # Wyłącz obliczenia gradientu
+            for data in data_loader:
+                images1, images2 = data
+                images1, images2 = images1.to(device), images2.to(device)
+                h1, h2, z1, z2 = simclr_model(images1, images2)  # Uzyskaj reprezentacje obrazów
+                
+                # Iteracja po obrazach w wsadzie
+                for batch_index, img_path in enumerate(data_loader.dataset.data_points):
+                    if batch_index < z1.size(0):  # Sprawdź, czy indeks nie wykracza poza rozmiar wsadu
+                        img_name = os.path.basename(img_path.path)
+                        features[img_name] = z1[batch_index].cpu().numpy()  # Zapisz wektory cech do słownika
+                    else:
+                        break  # Zakończ pętlę, jeśli indeks wykracza poza rozmiar wsadu
+
+        return features
+
+    # all photos mixed
+    mixed_data_dir = r'C:\Users\logix\Desktop\deep neural network\datasetmixed'
+    all_mixed_data_points = load_data_for_feature_extraction(mixed_data_dir)
+
+    # Utwórz SimCLRDataset i DataLoader dla nowych danych
+    all_mixed_simclr_dataset = SimCLRDataset(all_mixed_data_points, transform1, transform2)
+    all_mixed_feature_loader = DataLoader(all_mixed_simclr_dataset, batch_size=32, shuffle=False, num_workers=4)
+
+    # Ekstrakcja wektorów cech
+    extracted_features = extract_features(simclr_model, all_mixed_feature_loader)
+
+    # Zapisz wyekstrahowane cechy do pliku (opcjonalnie)
+    import json
+    with open('extracted_features.json', 'w') as f:
+        json.dump({k: v.tolist() for k, v in extracted_features.items()}, f)
+
+    # Wypisanie wyekstrahowanych wektorów cech
+    for img_name, feature_vector in extracted_features.items():
+        print(f"Obraz: {img_name}")
+        print(f"Wektor cech: {feature_vector}\n")
+
+
+
+
 
