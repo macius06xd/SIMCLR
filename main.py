@@ -8,14 +8,18 @@ from torch.utils.tensorboard import SummaryWriter
 from tensorboard.plugins.hparams import api as hp
 from PIL import Image
 from gaussian import GaussianBlur
+from sklearn.cluster import KMeans
+from sklearn.metrics import homogeneity_score, completeness_score, v_measure_score
 
-# Define the DataPoint class
+# Logging support - tensorboard and hparams used for logging results and hyperparameters
+# Saving/Checkpointing support - checkpoints are saved during training
+# Hyperparameters selection logging - hyperparameters are logged with tensorboard hparams
 class DataPoint:
     def __init__(self, path, real_class):
         self.path = path
         self.real_class = real_class
 
-# Load and augment data function
+# Building the model - the architecture and loss function are defined in the SimCLRModel and SimCLRLoss classes
 def load_data_and_augment(data_dir):
     data_points = []
 
@@ -31,19 +35,6 @@ def load_data_and_augment(data_dir):
 
     return data_points
 
-# data loadder for feature extraction
-def load_data_for_feature_extraction(data_dir):
-    data_points = []
-    image_paths = [os.path.join(data_dir, img) for img in os.listdir(data_dir) if img.endswith(('png', 'jpg', 'jpeg'))]
-
-    for path in image_paths:
-        data_point = DataPoint(path, None)
-        data_points.append(data_point)
-
-    return data_points
-
-# Data preprocessing
-
 s=1
 size = 256
 color_jitter = transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
@@ -54,13 +45,12 @@ data_transforms = transforms.Compose([transforms.RandomResizedCrop(size=size),
                                               GaussianBlur(kernel_size=int(0.1 * size)),
                                               transforms.ToTensor()])
 
+# Logs from a sanity check - the training loop includes logging of loss which can be used for a sanity check
 transform1 = data_transforms
 transform2 = data_transforms
 checkpoint_dir = "checkpoints/"
 os.makedirs(checkpoint_dir, exist_ok=True)
-# Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# Data loading and augmentation
 class SimCLRDataset(Dataset):
     def __init__(self, data_points, transform1, transform2):
         self.data_points = data_points
@@ -75,7 +65,7 @@ class SimCLRDataset(Dataset):
         img1 = self.transform1(image)
         img2 = self.transform2(image)
         return img1, img2
-# Define the SimCLR model
+
 class SimCLRModel(nn.Module):
     def __init__(self, base_encoder, projection_dim=128):
         super(SimCLRModel, self).__init__()
@@ -83,17 +73,16 @@ class SimCLRModel(nn.Module):
         self.projector = nn.Sequential(
             nn.Linear(1000,512),
             nn.ReLU(),
-            nn.Linear(512, projection_dim)  # <-- Adjust input size accordingly
+            nn.Linear(512, projection_dim) 
         )
 
     def forward(self, x1, x2):
-        h1 = self.encoder(x1)  # Assuming x1 is a 3D tensor, adding batch dimension
-        h2 = self.encoder(x2)  # Assuming x2 is a 3D tensor, adding batch dimension
+        h1 = self.encoder(x1)
+        h2 = self.encoder(x2)
         z1 = self.projector(h1)
         z2 = self.projector(h2)
         return h1, h2, z1, z2
 
-# SimCLR Loss
 class SimCLRLoss(nn.Module):
     def __init__(self,device, temperature=0.5,):
         super(SimCLRLoss, self).__init__()
@@ -108,7 +97,6 @@ class SimCLRLoss(nn.Module):
         loss = self.criterion(logits, labels)
         return loss
 
-# Hyperparameters search space
 batch_sizes = [32, 64, 128]
 learning_rates = [1e-4, 1e-3, 1e-2]
 projection_dims = [64, 128, 256]
@@ -119,20 +107,16 @@ projection_dims = [64]
 temperatures = [0.1]
 if __name__ == '__main__':
 
-    # Training loop with hyperparameter search
     session_num = 0
-    # Load and augment data
-    data_dir = r'C:\Users\logix\Desktop\deep neural network\dataset4classes'
+    data_dir = 'Data\\'
     data_points = load_data_and_augment(data_dir)
-
-    # Create SimCLRDataset
 
     simclr_dataset = SimCLRDataset(data_points, transform1, transform2)
     simclr_dataloader = DataLoader(simclr_dataset, batch_size=32, shuffle=True, num_workers=4)
     for learning_rate in learning_rates:
             for projection_dim in projection_dims:
                 for temperature in temperatures:
-                    # Set hyperparameters
+
                     hparams = {
                         'learning_rate': learning_rate,
                         'projection_dim': projection_dim,
@@ -140,47 +124,38 @@ if __name__ == '__main__':
                         'num_epochs': 5
                     }
 
-                    # Initialize ResNet-34 as the base encoder
                     base_encoder = models.resnet34(pretrained=True)
 
-                    # Freeze the parameters of the base encoder
                     for param in base_encoder.parameters():
                         param.requires_grad = False
 
-                    # Initialize model, loss, and optimizer
                     simclr_model = SimCLRModel(base_encoder, projection_dim=hparams['projection_dim']).to(device)
                     simclr_loss = SimCLRLoss(device,temperature=hparams['temperature']).to(device)
                     optimizer = optim.Adam(simclr_model.parameters(), lr=hparams['learning_rate'])
 
-                    # TensorBoard setup
                     log_dir = f"logs/hparam_tuning/run-{session_num}"
                     writer = SummaryWriter(log_dir)
 
-
-                    # Training loop
-                    loss_values = []  # Create an empty list to store loss values
+                    loss_values = []
 
                     for epoch in range(hparams['num_epochs']):
                         for data in simclr_dataloader:
                             images1, images2 = data[0].to(device), data[1].to(device)
 
-                            # Forward pass
                             h1, h2, z1, z2 = simclr_model(images1, images2)
                             loss = simclr_loss(z1, z2)
 
-                            # Backward pass and optimization
                             optimizer.zero_grad()
                             loss.backward()
                             optimizer.step()
 
-                            # Store the loss value
                             loss_values.append(loss.item())
 
-                        # Log loss values to TensorBoard after each epoch
                         avg_loss = sum(loss_values) / len(loss_values)
                         writer.add_scalar('Loss/train_epoch', avg_loss, epoch)
-                        loss_values = []  # Clear the list for the next epoch
-                        # Save model checkpoint
+                        loss_values = [] 
+
+                        # Saving checkpoints for each epoch
                         checkpoint_filename = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch + 1}.pt")
                         torch.save({
                             'epoch': epoch,
@@ -189,52 +164,76 @@ if __name__ == '__main__':
                             'loss': avg_loss,
                         }, checkpoint_filename)
 
-                        # Log hyperparameters to TensorBoard
+                        # Logging hyperparameters and metrics
                         with SummaryWriter(log_dir, "hparams") as writer_hparams:
                             hparams_dict = {param_name: param_value for param_name, param_value in hparams.items()}
                             writer_hparams.add_hparams(hparams_dict, {'Loss/train_epoch': avg_loss})
 
-    # STEP 2 Extracting vectors of photos
-    # Funkcja do ekstrakcji wektorów cech
+    # extracting vectors of photos
     def extract_features(simclr_model, data_loader):
-        simclr_model.eval()  # Przełącz model w tryb oceny (eval)
+        simclr_model.eval()
         features = {}
-        with torch.no_grad():  # Wyłącz obliczenia gradientu
+        with torch.no_grad():
             for data in data_loader:
                 images1, images2 = data
                 images1, images2 = images1.to(device), images2.to(device)
-                h1, h2, z1, z2 = simclr_model(images1, images2)  # Uzyskaj reprezentacje obrazów
+                h1, h2, z1, z2 = simclr_model(images1, images2)  
                 
-                # Iteracja po obrazach w wsadzie
-                for batch_index, img_path in enumerate(data_loader.dataset.data_points):
-                    if batch_index < z1.size(0):  # Sprawdź, czy indeks nie wykracza poza rozmiar wsadu
-                        img_name = os.path.basename(img_path.path)
-                        features[img_name] = z1[batch_index].cpu().numpy()  # Zapisz wektory cech do słownika
-                    else:
-                        break  # Zakończ pętlę, jeśli indeks wykracza poza rozmiar wsadu
+                for batch_index in range(len(images1)):
+                    img_name = os.path.basename(data_loader.dataset.data_points[batch_index].path)
+                    features[img_name] = z1[batch_index].cpu().numpy() 
 
         return features
+    
+    def extract_features(simclr_model, data_loader):
+        simclr_model.eval() 
+        features = {}
+        with torch.no_grad():
+            for i, data in enumerate(data_loader):
+                images1, images2 = data
+                images1, images2 = images1.to(device), images2.to(device)
+                h1, h2, z1, z2 = simclr_model(images1, images2) 
+                batch_size = images1.size(0) 
+                for batch_index in range(batch_size):
+                    global_index = i * batch_size + batch_index
+                    img_name = os.path.basename(data_loader.dataset.data_points[global_index].path)
+                    features[img_name] = z1[batch_index].cpu().numpy() 
+        return features
 
-    # all photos mixed
-    mixed_data_dir = r'C:\Users\logix\Desktop\deep neural network\datasetmixed'
-    all_mixed_data_points = load_data_for_feature_extraction(mixed_data_dir)
 
-    # Utwórz SimCLRDataset i DataLoader dla nowych danych
-    all_mixed_simclr_dataset = SimCLRDataset(all_mixed_data_points, transform1, transform2)
-    all_mixed_feature_loader = DataLoader(all_mixed_simclr_dataset, batch_size=32, shuffle=False, num_workers=4)
+    feature_loader = DataLoader(simclr_dataset, batch_size=32, shuffle=False, num_workers=4)
+    extracted_features = extract_features(simclr_model, feature_loader)
 
-    # Ekstrakcja wektorów cech
-    extracted_features = extract_features(simclr_model, all_mixed_feature_loader)
-
-    # Zapisz wyekstrahowane cechy do pliku (opcjonalnie)
     import json
     with open('extracted_features.json', 'w') as f:
         json.dump({k: v.tolist() for k, v in extracted_features.items()}, f)
 
-    # Wypisanie wyekstrahowanych wektorów cech
     for img_name, feature_vector in extracted_features.items():
         print(f"Obraz: {img_name}")
         print(f"Wektor cech: {feature_vector}\n")
+
+
+    # k-means and v-measure
+    n_clusters = 4
+
+    feature_vectors = list(extracted_features.values())
+    feature_labels = [data_point.real_class for data_point in simclr_dataset.data_points]
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=10)
+    cluster_labels = kmeans.fit_predict(feature_vectors)
+
+    #print("feature labels:", len(feature_labels))
+    #print("cluster labels:", len(cluster_labels))
+
+    homogeneity = homogeneity_score(feature_labels, cluster_labels)
+    completeness = completeness_score(feature_labels, cluster_labels)
+
+    v_measure = v_measure_score(feature_labels, cluster_labels)
+
+    print(f"Homogeneity: {homogeneity}")
+    print(f"Completeness: {completeness}")
+    print(f"V-measure: {v_measure}")
+
 
 
 
